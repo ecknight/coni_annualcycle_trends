@@ -4,6 +4,7 @@ library(lubridate)
 library(suncalc)
 library(detect)
 library(lutz)
+library(naturecounts)
 
 options(scipen=9999)
 
@@ -14,8 +15,6 @@ map.theme <- theme_nothing() +
         axis.text = element_blank())
 
 #TO DO: FIX METHODOLOGY MATRIX ISSUE####
-#TO DO: SEE IF I CAN ADD NIGHTJAR SURVEY NETWORK DATA####
-#TO DO: GET UPDATED CNS DATA####
 #TO DO: ADD IN RECOGNIZER DATA####
 
 #A. CONI DATABASE DATA#####
@@ -57,10 +56,7 @@ type <- locs %>%
 #Remove a bunch with nonsensical duration data
 
 CONI.use <- type %>% 
-  dplyr::filter(DURMETH %in% c("BB", "C", "CC", "DD", "EE", "F", "G", "GG", "H", "I", "II", "K", "Q", "R", "S", "T", "X", "Y", "Ya", "Z") | DURMETH=="A" & PROCESSOR_TYPE=="Computer",
-                DATA_DESC !="Human - broadcast",
-                type != "ARU - recognizer validated to presence absence of 300 hits of highest score-SongScope_CONIPeent3.4_70_5") %>% 
-  dplyr::filter(PROCESSOR_TYPE=="Human") %>% 
+  dplyr::filter(PCODE %in% c(3, 5, 7, 11, 18, 28, 59)) %>% 
   left_join(samp %>% 
               rename(LOCATION_pkey = LOCATION_fkey) %>% 
               dplyr::select(-COMMENTS)) %>% 
@@ -256,13 +252,91 @@ nsn.sun <- do.call(rbind, nsn.list) %>%
 hist(nsn.sun$tsss)
 hist(nsn.sun$tssr) #looks good
 
-#D. COMBINE DATASETS & FORMAT####
+#D. CANADIAN NIGHTJAR SURVEY DATA####
+
+#1. Get data----
+#Datasets I have access to
+#dbs <- nc_count(username = "ecknight")
+#password: CONICOPO2010
+
+#raw <- nc_data_dl(request_id=206938, username = "ecknight", fields_set = "extended", info = "CONI data for offsets")
+
+#write.csv(raw, "Offsets/naturecounts.csv", row.names = FALSE)
+raw <- read.csv("Offsets/naturecounts.csv")
+
+#2. Wrangle data----
+cns.use <- raw %>% 
+  dplyr::filter(ScientificName=="Chordeiles minor",
+                collection=="NIGHTJAR") %>% 
+  rename(Latitude=DecimalLatitude, Longitude=DecimalLongitude) %>% 
+  mutate(date = ymd(paste0(YearCollected,"-", MonthCollected, "-", DayCollected)),
+         hour = floor(as.numeric(TimeCollected)),
+         minute = round((as.numeric(TimeCollected)-hour)*60),
+         date = ymd_hm(paste(date, " ", hour,":",minute))) %>% 
+  dplyr::select(record_id, Latitude, Longitude, date, ObservationCount2, ObservationCount3, ObservationCount4, ObservationCount5, ObservationCount6, ObservationCount7) %>% 
+  pivot_longer(cols=ObservationCount2:ObservationCount7,
+               names_to="interval",
+               values_to="observation") %>% 
+  dplyr::filter(observation%in%c("C", "U", "V", "W"),
+                !is.na(Latitude),
+                !is.na(Longitude)) %>% 
+  mutate(Sample_ID=paste0("CNS-", record_id),
+         Max_Distance=Inf,
+         Time_Method="CC",
+         Start_Duration = as.numeric(str_sub(interval, -1, -1))-2,
+         End_Duration = Start_Duration + 1,
+         Max_Duration = 6,
+         Time_Level = End_Duration,
+         Abundance = 1)
+  
+#3. Calculate time since sunset & sunrise----
+#Filter out surveys with no survey time, get local timezone
+cns.tz <- cns.use %>% 
+  mutate(tz=tz_lookup_coords(Latitude, Longitude, method="accurate"))
+
+#Loop through timezones to calculate time since sunrise
+tzs <- unique(cns.tz$tz)
+
+cns.list <- list()
+for(i in 1:length(tzs)){
+  
+  cns.i <- cns.tz %>% 
+    dplyr::filter(tz==tzs[i]) %>% 
+    rename(lat = Latitude, lon = Longitude) %>% 
+    mutate(date = as.Date(date))
+  
+  cns.i$sunset <- getSunlightTimes(data=cns.i, keep="sunset", tz=tzs[i])$sunset
+  cns.i$sunrise <- getSunlightTimes(data=cns.i, keep="sunrise", tz=tzs[i])$sunrise
+  cns.i$sunset <- as.POSIXct(as.character(cns.i$sunset), tz=tzs[i])
+  cns.i$sunrise <- as.POSIXct(as.character(cns.i$sunrise), tz=tzs[i])
+  cns.i$date <- as.POSIXct(as.character(cns.i$date), tz=tzs[i])
+  cns.i$tsss <- as.numeric(difftime(cns.i$date, cns.i$sunset), units="hours")
+  cns.i$tssr <- as.numeric(difftime(cns.i$date, cns.i$sunrise), units="hours")
+  
+  cns.list[[i]] <- cns.i
+}
+
+cns.sun <- do.call(rbind, cns.list) %>% 
+  mutate(tsss = ifelse(tsss > 12, tsss-24, tsss),
+         tsss = ifelse(tsss < -12, tsss+24, tsss),
+         tssr = ifelse(tssr > 12, tssr-24, tssr),
+         tssr = ifelse(tssr < -12, tssr+24, tssr)) %>% 
+  dplyr::select(-tz, -sunrise, -sunset) %>% 
+  rename(Latitude = lat, Longitude = lon) %>% 
+  dplyr::select(colnames(nsn.sun))
+
+hist(cns.sun$tsss)
+hist(cns.sun$tssr) #looks good
+
+#E. COMBINE DATASETS & FORMAT####
 
 #1. Put datasets together----
-all <- rbind(BAM.sun, CONI.sun, nsn.sun) %>% 
-  unique()
+all <- rbind(BAM.sun, CONI.sun, nsn.sun, cns.sun) %>% 
+  unique() %>% 
+  mutate(doy = yday(date)) %>% 
+  dplyr::filter(doy < 230)
 
-#2. Plot----
+#2. Plot geographic distribution----
 plot.dat <- all %>% 
   dplyr::select(Latitude, Longitude) %>% 
   mutate(type="human") %>% 
@@ -287,7 +361,12 @@ plot.distribution
 
 ggsave(plot.distribution, filename="Figs/LocationsPlot.jpeg", width=16, height=8)
 
-#3. Format observation data----
+#3. Plot temporal coverage----
+plot.time <- ggplot(all) +
+  geom_hex(aes(x=doy, y=tsss))
+plot.time
+
+#4. Format observation data----
 all.m <- all %>% 
   group_by(Sample_ID, Time_Method, Time_Level) %>% 
   summarize(Abundance = sum(Abundance)) %>% 
@@ -352,7 +431,7 @@ lat <- c$lat
 sin <- c$sin
 cos <- c$cos
 
-#D. MODEL####
+#F. MODEL####
 
 #1. Select how to model time of day----
 m1 = cmulti(m | d ~ 1 + poly(tsss, 2), type = "rem")
