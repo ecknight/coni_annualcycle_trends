@@ -14,8 +14,7 @@ map.theme <- theme_nothing() +
         axis.title.y=element_text(margin=margin(0,10,0,0)),
         axis.text = element_blank())
 
-#TO DO: FIX METHODOLOGY MATRIX ISSUE####
-#TO DO: ADD IN RECOGNIZER DATA####
+#TO DO: CLEAN UP MODEL SELECTION####
 
 #A. CONI DATABASE DATA#####
 
@@ -71,7 +70,8 @@ CONI.use <- type %>%
                 !(Dur_Start==8 & DUR_end==10 & DURMETH=="CC"),
                 !Dur_Start=="unk",
                 !DUR_end=="unk",
-                !(Dur_Start==0 & DUR_end==10 & DURMETH=="G"))
+                !(Dur_Start==0 & DUR_end==10 & DURMETH=="G"),
+                !HR %in% c(12, 13))
 
 #5. Select first detection of each individual and tidy----
 CONI.tidy <-  CONI.use %>% 
@@ -125,10 +125,10 @@ for(i in 1:length(tzs)){
 }
 
 CONI.sun <- do.call(rbind, CONI.list) %>% 
-  mutate(tsss = ifelse(tsss > 12, tsss-24, tsss),
-         tsss = ifelse(tsss < -12, tsss+24, tsss),
-         tssr = ifelse(tssr > 12, tssr-24, tssr),
-         tssr = ifelse(tssr < -12, tssr+24, tssr)) %>% 
+  # mutate(tsss = ifelse(tsss > 12, tsss-24, tsss),
+  #        tsss = ifelse(tsss < -12, tsss+24, tsss),
+  #        tssr = ifelse(tssr > 12, tssr-24, tssr),
+  #        tssr = ifelse(tssr < -12, tssr+24, tssr)) %>% 
   dplyr::select(-tz, -sunrise, -sunset) %>% 
   rename(Latitude = lat, Longitude = lon)
 
@@ -155,7 +155,7 @@ BAM.use <- counts %>%
                                          "0-6 min",
                                          "1 min intervals to 10 mins"),
                 !is.na(Time_Description)) %>% 
-  mutate(date = ymd_hms(UTC, tz="GMT")) %>% 
+  mutate(date = ymd_hms(UTC, tz="UTC")) %>% 
   dplyr::select(Sample_ID, Latitude, Longitude, date, Max_Distance, Time_Method, Start_Duration, End_Duration, Max_Duration, Time_Level, Abundance)
 #Took out 1 min intervals to 10 minutes because there is only one obs of this time type
 
@@ -167,11 +167,11 @@ BAM.sun <- getSunlightTimes(data=BAM.use %>%
   dplyr::select(sunrise, sunset) %>% 
   cbind(BAM.use) %>% 
   mutate(tsss = as.numeric(difftime(date, sunset), units="hours"),
-         tssr = as.numeric(difftime(date, sunrise), units="hours"),
-         tsss = ifelse(tsss > 12, tsss-24, tsss),
-         tsss = ifelse(tsss < -12, tsss+24, tsss),
-         tssr = ifelse(tssr > 12, tssr-24, tssr),
-         tssr = ifelse(tssr < -12, tssr+24, tssr)) %>% 
+         tssr = as.numeric(difftime(date, sunrise), units="hours")) %>% 
+  # mutate(tsss = ifelse(tsss > 12, tsss-24, tsss),
+  #        tsss = ifelse(tsss < -12, tsss+24, tsss),
+  #        tssr = ifelse(tssr > 12, tssr-24, tssr),
+  #        tssr = ifelse(tssr < -12, tssr+24, tssr)) %>% 
   dplyr::select(-sunrise, -sunset)
 
 hist(BAM.sun$tsss)
@@ -181,15 +181,33 @@ hist(BAM.sun$tssr) #looks good
 
 #1. Read in data----
 nsn.raw <- read.csv("offsets/NSN_CONI.csv")
+nsn.route <- read.csv("offsets/NSN_all.csv")
+
+#2. Calculate # of stops per route----
+nsn.n <- nsn.route %>% 
+  dplyr::select(route_id, Year, survey_id, stop_number) %>% 
+  unique() %>% 
+  group_by(route_id, Year, survey_id) %>% 
+  summarize(n=n()) %>% 
+  ungroup()
+table(nsn.n$n)
+#Ok so they're all 10 stops! Weird
 
 #2. Select first detection of each individual and tidy----
 nsn.use <- nsn.raw %>% 
-  mutate(start_time = mdy_hm(start_time),
-         end_time = mdy_hm(end_time),
-         date = case_when(stop_number==1 ~ start_time,
-                          stop_number==10 ~ end_time),
-         Duration = (end_time - start_time)/9,
-         date = start_time + Duration*(stop_number-1),
+  mutate(start.time1 = mdy_hm(start_time),
+         end.time1 = mdy_hm(end_time),
+         end.time2 = case_when((hour(start.time1) > hour(end.time1)) & 
+                                 (yday(start.time1)==yday(end.time1)) ~ end.time1 + days(1),
+                              !is.na(end.time1) ~ end.time1),
+         end.time3 = case_when(hour(start.time1) %in% c(5:12) ~ end.time2 + hours(12),
+                              !is.na(end.time2) ~ end.time2),
+         start.time2 = case_when(hour(start.time1) %in% c(5:12) ~ start.time1 + hours(12),
+                                !is.na(start.time1) ~ start.time1),
+         datetime = case_when(stop_number==1 ~ start.time2,
+                          stop_number==10 ~ end.time3),
+         Duration = (end.time3 - start.time2)/9,
+         datetime = start.time2 + Duration*(stop_number-1),
          Sample_ID=paste0("NSN-", survey_stop_id),
          Max_Distance = Inf,
          Time_Method="CC",
@@ -202,16 +220,22 @@ nsn.use <- nsn.raw %>%
          End_Duration = Time_Level) %>% 
   rename(Latitude = latitude, Longitude = longitude) %>% 
   dplyr::filter(Abundance > 0) %>% 
-  arrange(Sample_ID, Latitude, Longitude, date, Max_Distance, Time_Method, Max_Duration, birdacct_id, Time_Level) %>% 
-  dplyr::group_by(Sample_ID, Latitude, Longitude, date, Max_Distance, Time_Method, Max_Duration, birdacct_id) %>% 
+  arrange(Sample_ID, Latitude, Longitude, datetime, Max_Distance, Time_Method, Max_Duration, birdacct_id, Time_Level) %>% 
+  dplyr::group_by(Sample_ID, Latitude, Longitude, datetime, Max_Distance, Time_Method, Max_Duration, birdacct_id) %>% 
   dplyr::filter(row_number()==1) %>% 
   ungroup() %>% 
-  dplyr::select(Sample_ID, Latitude, Longitude, date, Max_Distance, Time_Method, Start_Duration, End_Duration, Max_Duration, Time_Level, Abundance) %>% 
-  dplyr::filter(!is.na(date),
+  dplyr::filter(as.numeric(Duration) > 300,
+                as.numeric(Duration) < 1500) %>% 
+  dplyr::select(Sample_ID, Latitude, Longitude, datetime, Max_Distance, Time_Method, Start_Duration, End_Duration, Max_Duration, Time_Level, Abundance) %>% 
+  dplyr::filter(!is.na(datetime),
                 Latitude!="blank") %>% 
   mutate(Latitude = as.numeric(Latitude),
          Longitude = as.numeric(Longitude)) %>% 
   dplyr::filter(Latitude > 0, Latitude < 49)
+  # mutate(starthour = hour(start.time2), 
+  #        endhour = hour(end.time3),
+  #        hour = hour(date),
+  #        hours = abs(starthour - endhour))
 
 #3. Calculate time since sunset & sunrise----
 #Filter out surveys with no survey time, get local timezone
@@ -228,13 +252,13 @@ for(i in 1:length(tzs)){
   nsn.i <- nsn.tz %>% 
     dplyr::filter(tz==tzs[i]) %>% 
     rename(lat = Latitude, lon = Longitude) %>% 
-    mutate(date = as.Date(date))
+    mutate(date = as.Date(datetime))
   
   nsn.i$sunset <- getSunlightTimes(data=nsn.i, keep="sunset", tz=tzs[i])$sunset
   nsn.i$sunrise <- getSunlightTimes(data=nsn.i, keep="sunrise", tz=tzs[i])$sunrise
   nsn.i$sunset <- as.POSIXct(as.character(nsn.i$sunset), tz=tzs[i])
   nsn.i$sunrise <- as.POSIXct(as.character(nsn.i$sunrise), tz=tzs[i])
-  nsn.i$date <- as.POSIXct(as.character(nsn.i$date), tz=tzs[i])
+  nsn.i$date <- as.POSIXct(as.character(nsn.i$datetime), tz=tzs[i])
   nsn.i$tsss <- as.numeric(difftime(nsn.i$date, nsn.i$sunset), units="hours")
   nsn.i$tssr <- as.numeric(difftime(nsn.i$date, nsn.i$sunrise), units="hours")
   
@@ -242,10 +266,10 @@ for(i in 1:length(tzs)){
 }
 
 nsn.sun <- do.call(rbind, nsn.list) %>% 
-  mutate(tsss = ifelse(tsss > 12, tsss-24, tsss),
-         tsss = ifelse(tsss < -12, tsss+24, tsss),
-         tssr = ifelse(tssr > 12, tssr-24, tssr),
-         tssr = ifelse(tssr < -12, tssr+24, tssr)) %>% 
+  # mutate(tsss = ifelse(tsss > 12, tsss-24, tsss),
+  #        tsss = ifelse(tsss < -12, tsss+24, tsss),
+  #        tssr = ifelse(tssr > 12, tssr-24, tssr),
+  #        tssr = ifelse(tssr < -12, tssr+24, tssr)) %>% 
   dplyr::select(-tz, -sunrise, -sunset) %>% 
   rename(Latitude = lat, Longitude = lon)
 
@@ -272,8 +296,8 @@ cns.use <- raw %>%
   mutate(date = ymd(paste0(YearCollected,"-", MonthCollected, "-", DayCollected)),
          hour = floor(as.numeric(TimeCollected)),
          minute = round((as.numeric(TimeCollected)-hour)*60),
-         date = ymd_hm(paste(date, " ", hour,":",minute))) %>% 
-  dplyr::select(record_id, Latitude, Longitude, date, ObservationCount2, ObservationCount3, ObservationCount4, ObservationCount5, ObservationCount6, ObservationCount7) %>% 
+         datetime = ymd_hm(paste(date, " ", hour,":",minute))) %>% 
+  dplyr::select(record_id, Latitude, Longitude, datetime, ObservationCount2, ObservationCount3, ObservationCount4, ObservationCount5, ObservationCount6, ObservationCount7) %>% 
   pivot_longer(cols=ObservationCount2:ObservationCount7,
                names_to="interval",
                values_to="observation") %>% 
@@ -303,13 +327,13 @@ for(i in 1:length(tzs)){
   cns.i <- cns.tz %>% 
     dplyr::filter(tz==tzs[i]) %>% 
     rename(lat = Latitude, lon = Longitude) %>% 
-    mutate(date = as.Date(date))
+    mutate(date = as.Date(datetime))
   
   cns.i$sunset <- getSunlightTimes(data=cns.i, keep="sunset", tz=tzs[i])$sunset
   cns.i$sunrise <- getSunlightTimes(data=cns.i, keep="sunrise", tz=tzs[i])$sunrise
   cns.i$sunset <- as.POSIXct(as.character(cns.i$sunset), tz=tzs[i])
   cns.i$sunrise <- as.POSIXct(as.character(cns.i$sunrise), tz=tzs[i])
-  cns.i$date <- as.POSIXct(as.character(cns.i$date), tz=tzs[i])
+  cns.i$date <- as.POSIXct(as.character(cns.i$datetime), tz=tzs[i])
   cns.i$tsss <- as.numeric(difftime(cns.i$date, cns.i$sunset), units="hours")
   cns.i$tssr <- as.numeric(difftime(cns.i$date, cns.i$sunrise), units="hours")
   
@@ -317,10 +341,10 @@ for(i in 1:length(tzs)){
 }
 
 cns.sun <- do.call(rbind, cns.list) %>% 
-  mutate(tsss = ifelse(tsss > 12, tsss-24, tsss),
-         tsss = ifelse(tsss < -12, tsss+24, tsss),
-         tssr = ifelse(tssr > 12, tssr-24, tssr),
-         tssr = ifelse(tssr < -12, tssr+24, tssr)) %>% 
+  # mutate(tsss = ifelse(tsss > 12, tsss-24, tsss),
+  #        tsss = ifelse(tsss < -12, tsss+24, tsss),
+  #        tssr = ifelse(tssr > 12, tssr-24, tssr),
+  #        tssr = ifelse(tssr < -12, tssr+24, tssr)) %>% 
   dplyr::select(-tz, -sunrise, -sunset) %>% 
   rename(Latitude = lat, Longitude = lon) %>% 
   dplyr::select(colnames(nsn.sun))
@@ -328,15 +352,33 @@ cns.sun <- do.call(rbind, cns.list) %>%
 hist(cns.sun$tsss)
 hist(cns.sun$tssr) #looks good
 
-#E. COMBINE DATASETS & FORMAT####
+#E. COMBINE DATASETS & VISUALIZE####
 
 #1. Put datasets together----
-all <- rbind(BAM.sun, CONI.sun, nsn.sun, cns.sun) %>% 
+all <- rbind(BAM.sun, CONI.sun) %>% 
+  rbind(nsn.sun %>% 
+          dplyr::select(-datetime)) %>% 
+  rbind(cns.sun %>% 
+          dplyr::select(-datetime) %>% 
+          dplyr::filter(tsss > -5)) %>% 
   unique() %>% 
-  mutate(doy = yday(date)) %>% 
+  mutate(doy = yday(date),
+         Start_Duration = as.numeric(Start_Duration),
+         End_Duration = as.numeric(End_Duration)) %>% 
   dplyr::filter(doy < 230)
 
-#2. Plot geographic distribution----
+#2. Adjust tsss & tssr----
+ggplot(all) +
+  geom_point(aes(x=tsss, y=tssr, colour=Time_Method))
+ 
+all$tsss <- ifelse(all$tsss < -5, all$tsss+24, all$tsss)
+all$tssr <- ifelse(all$tssr >10, all$tssr-24, all$tssr)
+ 
+ ggplot(all) +
+   geom_point(aes(x=tsss, y=tssr, colour=Time_Method))
+
+
+#3. Plot geographic distribution----
 plot.dat <- all %>% 
   dplyr::select(Latitude, Longitude) %>% 
   mutate(type="human") %>% 
@@ -361,12 +403,42 @@ plot.distribution
 
 ggsave(plot.distribution, filename="Figs/LocationsPlot.jpeg", width=16, height=8)
 
-#3. Plot temporal coverage----
-plot.time <- ggplot(all) +
+#4. Plot temporal coverage----
+plot.tsss <- ggplot(all) +
   geom_hex(aes(x=doy, y=tsss))
-plot.time
+plot.tsss
+plot.tssr <- ggplot(all) +
+  geom_hex(aes(x=doy, y=tssr))
+plot.tssr
 
-#4. Format observation data----
+#5. Explore temporal vals----
+ggplot(all) +
+  geom_hex(aes(x=tsss, y=Start_Duration))
+ggplot(all) +
+  geom_hex(aes(x=tssr, y=Start_Duration))
+ggplot(all) +
+  geom_hex(aes(x=doy, y=Start_Duration))
+
+#6. Determine peaks for tsss & tsssr----
+mon <- read.csv("Data/MonitoringData.csv") %>% 
+  mutate(pres = ifelse(count > 0, 1, 0),
+         latr = round(lat, -1),
+         latr = case_when(latr==20 ~ 30,
+                          latr==70 ~ 60,
+                          !is.na(latr) ~ latr))
+
+ggplot(mon) +
+  geom_smooth(aes(x=tsss, y=pres, colour=factor(latr))) +
+  geom_jitter(aes(x=tsss, y=pres, colour=factor(latr))) +
+  facet_wrap(~latr)
+
+ggplot(mon) +
+  geom_smooth(aes(x=tssr, y=pres, colour=factor(latr))) +
+  facet_wrap(~latr)
+
+#F. FORMAT FOR MODELLING####
+
+#1. Format observation data----
 all.m <- all %>% 
   group_by(Sample_ID, Time_Method, Time_Level) %>% 
   summarize(Abundance = sum(Abundance)) %>% 
@@ -378,7 +450,7 @@ all.m <- all %>%
               names_sort=TRUE) %>% 
   dplyr::filter(!is.na(Sample_ID))
 
-#4. Format design data----
+#2. Format design data----
 all.time <- all %>%  
   dplyr::select(Time_Method, Max_Duration, End_Duration, Time_Level) %>% 
   unique()
@@ -388,7 +460,7 @@ all.d <- all.m %>%
   dplyr::select(Sample_ID, Time_Method) %>% 
   left_join(time.d) 
 
-#5. Change zeros to NAs in the observation matrix----
+#3. Change zeros to NAs in the observation matrix----
 cols <- 1:6
 for (i in cols){
   
@@ -397,7 +469,7 @@ for (i in cols){
   all.m[indices, i+2] <- ifelse(is.na(all.d[indices, i+3]), NA, 0)
 }
 
-#6. Change to matrices---
+#4. Change to matrices---
 m <- all.m %>% 
   dplyr::select(-Sample_ID, -Time_Method) %>% 
   as.matrix()
@@ -408,53 +480,80 @@ d <- all.d %>%
   as.matrix()
 row.names(d) <- all.d$Sample_ID
 
-#7. Format covariates----
+#5. Format covariates----
 c <- all.m %>% 
   dplyr::select(Sample_ID, Time_Method) %>% 
   left_join(all) %>% 
-  mutate(doy = yday(date),
-         hour = as.numeric(hour(date))) %>% 
   rename(lat = Latitude, lon = Longitude) %>% 
-  dplyr::select(Sample_ID, lat, lon, doy, hour, tsss, tssr) %>% 
-  mutate(doy2 = doy^2,
-         tsss2 = tsss^2,
-         tssr2 = tssr^2,
-         ts = (hour +2)/8,
-         sin = sin(ts*2*pi),
-         cos = cos(ts*2*pi)) %>% 
+  dplyr::select(Sample_ID, lat, lon, date, tsss, tssr) %>% 
+  mutate(doy = yday(date),
+         start = hour(date) + minute(date)/60) %>% 
   unique()
 
 tsss <- c$tsss
-ts <- c$ts
 tssr <- c$tssr
-lat <- c$lat
-sin <- c$sin
-cos <- c$cos
+ds <- c$doy/365
+lats <- (c$lat-25)/(64-25)
+lons <- (c$lon+139)/(139-61)
 
-#F. MODEL####
+#G. MODEL####
 
-#1. Select how to model time of day----
-m1 = cmulti(m | d ~ 1 + poly(tsss, 2), type = "rem")
-m2 = cmulti(m | d ~ 1 + sin, type = "rem")
-m3 = cmulti(m | d ~ 1 + cos, type = "rem")
-m4 = cmulti(m | d ~ 1 + sin + cos, type = "rem")
-sapply(list(m1, m2, m3, m4), AIC) #tsss2
+#1. Day of year----
+md1 = cmulti(m | d ~ 1 + ds, type="rem")
+md2 = cmulti(m | d ~ 1 + poly(ds, 2), type = "rem")
+md3 = cmulti(m | d ~ 1 + poly(ds, 2)+ poly(ds, 2):lats, type = "rem")
+md4 = cmulti(m | d ~ 1 + poly(ds, 2) + poly(ds, 2):lons, type = "rem")
+md5 = cmulti(m | d ~ 1 + poly(ds, 2) + poly(ds, 2):lons + poly(ds, 2):lats, type = "rem")
+md6 = cmulti(m | d ~ 1 + + poly(ds, 2) + poly(ds, 2):lons:lats, type = "rem")
+sapply(list(md1, md2, md3, md4, md5, md6), AIC)
+#2nd order plus latitude interaction
 
+#2. Find best combination of sunset & sunrise peaks----
+loops <- expand.grid(coss.off = c(-1:2),
+                     cosr.off = c(-1:2))
 
+removal.list.sr <- list()
+for(i in 1:nrow(loops)){
+  
+  coss.i <- cos((tsss-loops$coss.off[i])/24*2*pi)
+  cosr.i <- cos((tssr-loops$cosr.off[i])/24*2*pi)
+  
+  removal.list.sr[[i]]  <- cmulti(m | d ~ 1 + coss.i + cosr.i, type="rem")
+  
+  print(paste0("Finished model ", i, " of ", nrow(loops)))
+  
+}
 
-m1 = cmulti(m | d ~ 1, type="rem")
-m2 = cmulti(m | d ~ 1 + c$lat, type = "rem")
-m3 = cmulti(m | d ~ 1 + c$doy, type="rem")
-m4 = cmulti(m | d ~ 1 + c$doy + c$doy2, type = "rem")
-m5 = cmulti(m | d ~ 1 + c$tssr, type="rem")
-m6 = cmulti(m | d ~ 1 + c$tssr + c$tssr2, type="rem")
-m7 = cmulti(m | d ~ 1 + c$sin, type="rem")
-m8 = cmulti(m | d ~ 1 + c$cos, type="rem")
-m9 = cmulti(m | d ~ 1 + c$sin + c$cos, type="rem")
+removal.aic <- data.frame(df=sapply(removal.list.sr, function(z) length(coef(z))),
+                          AIC=sapply(removal.list.sr, AIC),
+                          loglik = sapply(removal.list.sr, function(z) logLik(z))) %>%
+  mutate(AICc = AIC + (2*df^2+2*df) / (length(c)-df-1),
+         delta = AICc - min(AICc),
+         rellike = exp(-.5*delta),
+         weight = rellike/sum(rellike)) %>%
+  mutate_at(c("loglik", "AICc", "delta", "weight"), ~round(., 2)) %>%
+  dplyr::select(df, loglik, AICc, delta, weight) %>% 
+  cbind(loops)
+removal.aic
 
-removal.list <- list(m1, m3, m4, m5, m6, m7, m8, m9, m10)
+sins = sin((tsss+2)/24*2*pi)
+sinr = sin((tssr+0.5)/24*2*pi)
 
-#2. Compare with AIC----
+plot(tsss, sins)
+plot(tssr, sinr)
+
+#3. Time of day----
+mt1 = cmulti(m | d ~ 1, type = "rem")
+mt2 = cmulti(m | d ~ 1 + poly(tsss, 2), type="rem")
+mt3 = cmulti(m | d ~ 1 + poly(tsss, 2) + + poly(tsss, 2):lats, type="rem")
+mt4 = cmulti(m | d ~ 1 + sins, type="rem")
+mt5 = cmulti(m | d ~ 1 + sins + sins:lats, type="rem")
+mt6 = cmulti(m | d ~ 1 + sinr, type="rem")
+mt7 = cmulti(m | d ~ 1 + sinr + sinr:lats, type="rem")
+mt8 = cmulti(m | d ~ 1 + sinr + sins, type="rem")
+mt9 = cmulti(m | d ~ 1 + sinr + sinr:lats + sins + sins:lats, type="rem")
+
+removal.list <- list(mt1, mt2, mt3, mt4, mt5, mt6, mt7, mt8, mt9)
 removal.aic <- data.frame(df=sapply(removal.list, function(z) length(coef(z))),
                           AIC=sapply(removal.list, AIC),
                           loglik = sapply(removal.list, function(z) logLik(z))) %>%
@@ -465,3 +564,54 @@ removal.aic <- data.frame(df=sapply(removal.list, function(z) length(coef(z))),
   mutate_at(c("loglik", "AICc", "delta", "weight"), ~round(., 2)) %>%
   dplyr::select(df, loglik, AICc, delta, weight)
 removal.aic
+
+#4. Full model list----
+m1 = cmulti(m | d ~ 1, type="rem")
+m2 = cmulti(m | d ~ 1 + poly(ds, 2) + poly(ds, 2):lats, type = "rem")
+m3 = cmulti(m | d ~ 1 + sinr + sinr:lats + sins + sins:lats, type="rem")
+m4 = cmulti(m | d ~ 1 + sinr + sinr:lats + sins + sins:lats + poly(ds, 2) + poly(ds, 2):lats, type="rem")
+
+removal.list <- list(m1, m2, m3, m4, m5)
+removal.aic <- data.frame(df=sapply(removal.list, function(z) length(coef(z))),
+                          AIC=sapply(removal.list, AIC),
+                          loglik = sapply(removal.list, function(z) logLik(z))) %>%
+  mutate(AICc = AIC + (2*df^2+2*df) / (length(c)-df-1),
+         delta = AICc - min(AICc),
+         rellike = exp(-.5*delta),
+         weight = rellike/sum(rellike)) %>%
+  mutate_at(c("loglik", "AICc", "delta", "weight"), ~round(., 2)) %>%
+  dplyr::select(df, loglik, AICc, delta, weight)
+removal.aic
+
+#H. VISUALIZE####
+
+#1. Data frame of new data----
+dat <- expand.grid(tsss = seq(-12, 12, 1),
+                   tssr = seq(-12, 12, 1),
+                   ds=seq(0.27, 0.59, 0.01),
+                   lat = c(25, 45, 65)) %>% 
+  mutate(day = ds*365,
+         duration=6,
+         lats = (lat-25)/(64-25),
+         sins = sin((tsss+2)/24*2*pi),
+         sinr = sin((tssr+0.5)/24*2*pi))
+
+#2. Predict for survey data----
+dat$pr <- predict(m4, newdata = dat, type="response")
+
+#Turn singing rates into probabilities requires total # minutes
+dat$p <- 1-exp(-dat$duration*dat$pr)
+
+#3. Visualize----
+ggplot(dat) +
+  geom_raster(aes(x=day, y=tsss, fill=p)) +
+  geom_hline(aes(yintercept=0)) +
+  scale_fill_viridis_c() +
+  facet_wrap(~lat)
+
+#I. SAVE####
+
+#1. Save best model----
+saveRDS(m4, "Data/BestOffsetModel.RDS")
+
+#Ok this needs a lot of work. I'm concerned the singing rate approximation doesn't work for CONI. But let's go with something simple for now.
