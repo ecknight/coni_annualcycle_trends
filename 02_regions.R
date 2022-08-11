@@ -47,15 +47,6 @@ pt.spring <- raw %>%
                 Lat < 12) %>% 
   dplyr::select(PinpointID, Season2, Type, Lat, Long) %>% 
   left_join(bird) %>% 
-  mutate(stage = "spring stopover")
-
-#3c. Spring stopover----
-pt.spring <- raw %>% 
-  dplyr::filter(Season2=="SpringMig",
-                Lat >= 0,
-                Lat <= 12) %>% 
-  dplyr::select(PinpointID, Season2, Type, Lat, Long) %>% 
-  left_join(bird) %>% 
   mutate(stage = "spring")
 
 #3d. Fall stopover----
@@ -92,8 +83,7 @@ pt.n <- pt %>%
               ungroup())
 
 pt.mcp <- pt.n %>% 
-  dplyr::filter(pts >= 5,
-                inds >= 3,
+  dplyr::filter((pts >= 5 & inds >= 3),
                 stage!="breed") %>% 
   left_join(pt) %>% 
   st_as_sf(coords=c("Long", "Lat"), crs=4326) %>% 
@@ -114,10 +104,11 @@ mcp.95 %>%
             sd = sd(area)) %>% 
   mutate(radius = sqrt(mean/pi))
 
+table(mcp.95$pop, mcp.95$stage)
+
 #4b. Buffer with mean area radius for other pts----
 pt.buff <- pt.n %>% 
-  dplyr::filter(pts < 5,
-                inds < 3,
+  dplyr::filter((pts < 5 | inds < 3),
                 stage!="breed") %>% 
   left_join(pt) %>% 
   group_by(pop, stage) %>% 
