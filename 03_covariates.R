@@ -93,14 +93,14 @@ ee_gcs_to_local(task = task_vector, dsn="Data/Covariates/PopulationCovariates_Po
 # 
 # write.csv(alan.pt, "Data/Covariates/PopulationCovariates_Point_alan.csv")
 
-#7. Tree regrowth----
+#7. Forest change----
 
 #7a. Set up year loop----
-years <- c(2001:2019)
-for(i in 1:(length(years)-1)){
+years <- c(2002:2019)
+for(i in 1:length(years)){
   
-  year1 <- years[i]
-  year2 <- years[i+1]
+  year1 <- 2001
+  year2 <- years[i]
   
   #7b. Get images for t and t-1----
   modis1 <- ee$ImageCollection("MODIS/006/MCD12Q1")$filter(ee$Filter$date(paste0(year1, '-01-01'), paste0(year1,'-12-31')))$select('LC_Type1')$mean()
@@ -110,8 +110,8 @@ for(i in 1:(length(years)-1)){
   modis.nottree <- modis1$remap(c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17), c(0,0,0,0,0,2,2,2,2,2,2,2,0,2,0,2,2))
   modis.tree<- modis2$remap(c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17), c(1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0))
   
-  #7d. Take difference between years and remp----
-  modis.treeconv <- modis.nottree$subtract(modis.tree)$remap(c(-1,0,1,2), c(0,0,1,0))
+  #7d. Take difference between years and remap----
+  modis.treeconv <- modis.nottree$subtract(modis.tree)$remap(c(-1,0,1,2), c(-1,0,1,0))
 
   #7e. Get mean within region polygons---
   tree.mn <- modis.treeconv$reduceRegions(reducer=ee$Reducer$mean(),
@@ -140,11 +140,11 @@ for(i in 1:(length(years)-1)){
 #8. Crop conversion----
 
 #8a. Set up year loop----
-years <- c(2001:2019)
-for(i in 1:(length(years)-1)){
+years <- c(2002:2019)
+for(i in 1:length(years)){
   
-  year1 <- years[i]
-  year2 <- years[i+1]
+  year1 <- 2001
+  year2 <- years[i]
   
   #8b. Get images for t and t-1----
   modis1 <- ee$ImageCollection("MODIS/006/MCD12Q1")$filter(ee$Filter$date(paste0(year1, '-01-01'), paste0(year1,'-12-31')))$select('LC_Type1')$mean()
@@ -199,7 +199,7 @@ cov.drght <- read.csv("Data/Covariates/PopulationCovariates_Polygon_drought.csv"
                          stage=="winter" & month %in% c(11:4) ~ 1,
                          stage=="spring" & month %in% c(3:5) ~ 1)) %>% 
   dplyr::filter(use==1) %>% 
-  group_by(area, pop, stage, type, year) %>% 
+  group_by(pop, stage, type, year) %>% 
   summarize(pdsi.mn = mean(pdsi),
             pdsi.cv = sd(pdsi)/mean(pdsi)) %>% 
   ungroup()
@@ -212,25 +212,25 @@ cov.alan <- read.csv("Data/Covariates/PopulationCovariates_Polygon_alan.csv") %>
          year = case_when(source=="dsmp" ~ str_sub(band, 2, 5),
                           source=="viirs" ~ str_sub(band, 4, 7)),
          year = as.numeric(year)) %>% 
-  group_by(area, pop, stage, type, year) %>% 
+  group_by(pop, stage, type, year) %>% 
   summarize(alan = mean(alan)) %>% 
   ungroup()
 
 #9c. Tree & crop----
-files.tree <- files %>% 
+files.treecrop <- files %>% 
   dplyr::filter(cov %in% c("tree", "crop")) %>% 
   mutate(file = paste0("Data/Covariates/", file))
 
-cov.treecrop <- read_csv(files.tree$file, id="file") %>% 
-  separate(file, into=c("data", "covariates", "descrip", "shape", "cov", "year", "filetype")) %>%
+cov.treecrop <- read_csv(files.treecrop$file, id="file") %>% 
+  separate(file, into=c("data", "covariates", "descrip", "shape", "cov", "year", "filetype")) %>% 
   dplyr::select(area, pop, stage, type, year, cov, mean) %>% 
   pivot_wider(names_from=cov, values_from=mean) %>% 
   mutate(year = as.numeric(year))
 
 #9d. Put together---
 cov <- cov.drght %>% 
-  left_join(cov.alan) %>% 
-  left_join(cov.treecrop) %>% 
+  full_join(cov.alan) %>% 
+  full_join(cov.treecrop) %>% 
   dplyr::filter(year %in% c(2002:2019))
 
 cov.year <- cov %>% 
@@ -239,7 +239,7 @@ cov.year <- cov %>%
   left_join(cov %>% 
             dplyr::filter(stage=="breed") %>% 
             rename(cropt2 = crop, treet2 = tree) %>% 
-            dplyr::select(area, pop, stage, type, year, cropt2, treet2))
+            dplyr::select(pop, stage, type, year, cropt2, treet2))
 
 #10. Join to monitoring data----
 
@@ -251,6 +251,79 @@ dat <- read.csv("Data/MonitoringData_Offsets.csv") %>%
   
 #10b. Join to covariates----
 dat.cov <- dat %>% 
-  inner_join(cov.year)
+  inner_join(cov.year) %>% 
+  dplyr::filter(year!=2020)
 
-write.csv(dat.cov, "Data/MonitoringData_Covariates.csv")
+#11. Look at annual trend----
+
+#11a. Mean seasonal drought index----
+ggplot(dat.cov) +
+  geom_point(aes(x=pdsi.mn, y=year)) +
+  geom_smooth(aes(x=pdsi.mn, y=year, colour=stage), method="lm") +
+  facet_grid(stage~pop, scales="free")
+#Should detrend
+
+#11b. CV of seasonal drought index----
+ggplot(dat.cov) +
+  geom_point(aes(x=pdsi.cv, y=year)) +
+#  geom_smooth(aes(x=pdsi.cv, y=year, colour=stage), method="lm") +
+  facet_grid(stage~pop)
+#Do I want to use drought CV? I think probably not, seems like a stretch
+
+#11c. ALAN----
+ggplot(dat.cov) +
+  geom_point(aes(x=alan, y=year)) +
+  geom_smooth(aes(x=alan, y=year, colour=stage), method="lm") +
+  facet_grid(stage~pop, scales="free")
+#Nope, can't use it. The two datasets do not integrate well
+
+#11d. Crop conversion---
+ggplot(dat.cov) +
+  geom_point(aes(x=cropt1, y=year)) +
+  geom_smooth(aes(x=cropt1, y=year, colour=stage), method="lm") +
+  facet_grid(stage~pop, scales="free")
+#Detrend
+
+#11e. Forest change---
+ggplot(dat.cov) +
+  geom_point(aes(x=treet1, y=year)) +
+  geom_smooth(aes(x=treet1, y=year, colour=stage), method="lm") +
+  facet_grid(stage~pop, scales="free")
+#Detrend
+
+#12. Detrend----
+#https://github.com/crushing05/WOTH_retro/blob/master/WOTH_data_prep.R
+
+#12a. Mean drought----
+dat.cov <- plyr::ddply(dat.cov, c("pop", "stage"), mutate, pdsidt = resid(lm(pdsi.mn~year)))
+
+ggplot(dat.cov) +
+  geom_point(aes(x=pdsidt, y=year)) +
+  geom_smooth(aes(x=pdsidt, y=year, colour=stage), method="lm") +
+  facet_grid(stage~pop, scales="free")
+
+#12b. Crop conversion----
+dat.cov <- plyr::ddply(dat.cov, c("pop", "stage"), mutate, cropdt = resid(lm(cropt1~year)))
+
+ggplot(dat.cov) +
+  geom_point(aes(x=cropdt, y=year)) +
+  geom_smooth(aes(x=cropdt, y=year, colour=stage), method="lm") +
+  facet_grid(stage~pop, scales="free")
+
+#12c. Forest change----
+dat.cov <- plyr::ddply(dat.cov, c("pop", "stage"), mutate, treedt = resid(lm(treet1~year)))
+
+ggplot(dat.cov) +
+  geom_point(aes(x=treedt, y=year)) +
+  geom_smooth(aes(x=treedt, y=year, colour=stage), method="lm") +
+  facet_grid(stage~pop, scales="free")
+
+#13. Make it wide and save----
+dat.out <- dat.cov %>% 
+  dplyr::select(method, route, count, p, pop, year, stage, pdsidt, treedt, cropdt) %>% 
+  unique() %>% 
+  pivot_wider(id_cols=c(method, route, count, p, pop, year),
+              names_from=stage,
+              values_from=c(pdsidt, treedt, cropdt))
+
+write.csv(dat.out, "Data/MonitoringData_Model.csv", row.names = FALSE)
