@@ -4,13 +4,14 @@ library(lutz)
 library(suncalc)
 library(detect)
 library(sf)
+library(data.table)
 
 options(scipen = 99999)
 
 #Thoughts:
 #needs to be at route level so abundances are not so zero-inflated and because station-level data unavailable for US
 #so how to equalize effort between survey protocols (10-12 * 6 minutes vs 50 * 3 minutes)
-#and how to choose TOD to calculate offset?
+#and how to choose TOD to calculate offset? Take mean of all surveys
 #and does analysis use repeated measures or are data points unlinked between years? If so, should I be putting EVERYTHING in?
 #Don't forget Clark has observer... not sure I need this for CONI TBH
 
@@ -26,12 +27,12 @@ bbs <- bbs_data$route %>%
          startdate = ymd_hm(paste0(Year, "-", Month, "-", Day, " ", str_sub(StartTime, -4, -3), ":", str_sub(StartTime, -2, -1))),
          enddate = ymd_hm(paste0(Year, "-", Month, "-", Day, " ", str_sub(EndTime, -4, -3), ":", str_sub(EndTime, -2, -1))),
          interval = interval(startdate, enddate),
-         datetime = int_start(interval) + (int_end(interval) - int_start(interval))/2,
+         meandate = int_start(interval) + (int_end(interval) - int_start(interval))/2,
          method = "BBS",
          n = 50) %>%
   rename(route = Route, lat = Latitude, lon = Longitude, obs = ObsN) %>% 
-  dplyr::select(method, route, lat, lon, obs, datetime, count, n) %>% 
-  dplyr::filter(!is.na(datetime), 
+  dplyr::select(method, route, lat, lon, obs, startdate, enddate, meandate, count, n) %>% 
+  dplyr::filter(!is.na(meandate), 
                 !is.na(lat),
                 !is.na(lon))
 
@@ -72,9 +73,9 @@ cns <- cns.stop %>%
             n=n()) %>% 
   ungroup() %>% 
   mutate(interval = interval(startdate, enddate),
-         datetime = int_start(interval) + (int_end(interval) - int_start(interval))/2,
+         meandate = int_start(interval) + (int_end(interval) - int_start(interval))/2,
          method="CNS") %>% 
-  dplyr::select(method, route, lat, lon, obs, datetime, count, n)
+  dplyr::select(method, route, lat, lon, obs, startdate, enddate, meandate, count, n)
 
 #3. Get NSN data----
 nsn.raw <- read.csv("offsets/NSN_all.csv") %>% 
@@ -101,25 +102,24 @@ nsn.stop <- nsn.raw %>%
   unique() %>% 
   left_join(nsn.bird) %>% 
   mutate(interval = interval(start_time, end_time),
-         datetime = int_start(interval) + (int_end(interval) - int_start(interval))/2,
+         meandate = int_start(interval) + (int_end(interval) - int_start(interval))/2,
          latitude = as.numeric(latitude),
          longitude = as.numeric(longitude),
          count = ifelse(is.na(count), 0, count)) %>% 
-  rename(route = route_id, obs = user_id, lat = latitude, lon = longitude) %>% 
-  dplyr::select(route, lat, lon, obs, datetime, count) %>% 
-  dplyr::filter(!is.na(datetime), 
+  rename(route = route_id, obs = user_id, lat = latitude, lon = longitude, startdate = start_time, enddate = end_time) %>% 
+  dplyr::filter(!is.na(meandate), 
                 !is.na(lat),
                 !is.na(lon))
 
 nsn <- nsn.stop %>% 
-  group_by(route, obs, datetime) %>% 
+  group_by(route, obs, meandate, startdate, enddate) %>% 
   summarize(lat = mean(lat),
             lon = mean(lon),
             count = sum(count),
             n=n()) %>% 
   ungroup() %>% 
   mutate(method="NSN") %>% 
-  dplyr::select(method, route, lat, lon, obs, datetime, count, n)
+  dplyr::select(method, route, lat, lon, obs, startdate, enddate, meandate, count, n)
 
 #4. Combine----
 all <- rbind(bbs, cns, nsn) %>% 
@@ -129,7 +129,8 @@ all <- rbind(bbs, cns, nsn) %>%
   mutate(lon = ifelse(lon > 0, -lon, lon))
 
 #5. Calculate time since sunset----
-#Filter out surveys with no survey time, get local timezone
+
+#Get local timezone
 all.tz <- all %>% 
   mutate(tz=tz_lookup_coords(lat, lon, method="accurate"))
 
@@ -141,13 +142,13 @@ for(i in 1:length(tzs)){
   
   all.i <- all.tz %>% 
     dplyr::filter(tz==tzs[i]) %>% 
-    mutate(date = as.Date(datetime))
+    mutate(date = as.Date(startdate))
   
   all.i$sunset <- getSunlightTimes(data=all.i, keep="sunset", tz=tzs[i])$sunset
   all.i$sunrise <- getSunlightTimes(data=all.i, keep="sunrise", tz=tzs[i])$sunrise
   all.i$sunset <- as.POSIXct(as.character(all.i$sunset), tz=tzs[i])
   all.i$sunrise <- as.POSIXct(as.character(all.i$sunrise), tz=tzs[i])
-  all.i$date <- as.POSIXct(as.character(all.i$datetime), tz=tzs[i])
+  all.i$date <- as.POSIXct(as.character(all.i$startdate), tz=tzs[i])
   all.i$tsss <- as.numeric(difftime(all.i$date, all.i$sunset), units="hours")
   all.i$tssr <- as.numeric(difftime(all.i$date, all.i$sunrise), units="hours")
   
@@ -166,45 +167,76 @@ ggplot(all.sun) +
   geom_histogram(aes(x=tsss, fill=method)) +
   facet_wrap(~method, scales="free_y")
 
-write.csv(all.sun, "Data/MonitoringData.csv")
 
-#6. Calculate offsets----
+#6. Create line for each survey from route-level data----
+all.stop.list <- list()
+for(i in 1:nrow(all.sun)){
+  
+  n.i <- all.sun[i,"n"]
+  
+  all.stop.list[[i]] <- all.sun %>% 
+    slice(rep(i,n.i))
+  
+}
+
+all.stop <- rbindlist(all.stop.list) %>% 
+  group_by(method, route, lat, lon, obs, startdate, enddate, tsss) %>% 
+  mutate(stop = row_number()) %>% 
+  ungroup() %>% 
+  mutate(duration = (enddate - startdate)/n,
+         datetime = startdate + duration*(stop-1),
+         tsss = tsss + duration*(stop-1),
+         tssr = tssr + duration*(stop-1))
+
+#7. Calculate offsets----
+
 mod <- readRDS("Data/BestOffsetModel.RDS")
 
-all.off <- all.sun %>% 
+all.off <- all.stop %>% 
   mutate(doy = yday(datetime),
          ds = doy/365,
-         duration = ifelse(method=="BBS", n*3, n*6),
+         length = ifelse(method=="BBS", n*3, n*6),
          sins = sin((tsss+2)/24*2*pi),
          sinr = sin((tssr+0.5)/24*2*pi),
-         lats = (lat-25)/(64-25),
+         lats = (lat)/(64),
          pres = ifelse(count > 0, 1, 0)) %>% 
   dplyr::filter(!is.na(tsss),
                 !is.na(ds))
 
 all.off$pr <- predict(mod, newdata = all.off, type="response")
 
-all.off$p <- 1-exp(-all.off$duration*all.off$pr)
+all.off$p <- 1-exp(-all.off$length*all.off$pr)
 
-#7. Visualize offsets----
-ggplot(all.off) +
+#8. Calculate mean p per route----
+all.out <- all.off %>% 
+  group_by(method, route, lat, lon, obs, startdate, enddate, meandate, count, n) %>% 
+  summarize(pr = mean(pr),
+            p = mean(p),
+            tsss = mean(tsss),
+            tssr = mean(tssr)) %>% 
+  ungroup
+
+write.csv(all.out, "Data/MonitoringData.csv")
+
+#9. Visualize offsets----
+ggplot(all.out) +
   geom_histogram(aes(x=duration, fill=method)) +
   facet_wrap(~method, scales="free_y")
 
-ggplot(all.off) +
+ggplot(all.out) +
   geom_histogram(aes(x=pr, fill=method)) +
   facet_wrap(~method, scales="free_y")
 
-ggplot(all.off) +
+ggplot(all.out) +
   geom_histogram(aes(x=p, fill=method)) +
   facet_wrap(~method, scales="free_y")
 
-ggplot(all.off) +
+ggplot(all.out) +
 #  geom_point(aes(x=count, y=p, colour=method)) +
   geom_smooth(aes(x=p, y=pres), method="lm") +
   facet_wrap(~method, scales="free")
 
-all.off %>% 
+all.out %>% 
   mutate(count.mn = count/duration) %>% 
   group_by(method) %>% 
   summarize(mean = mean(count.mn),
@@ -214,7 +246,7 @@ all.off %>%
 pops <- read_sf("Data/NaturalPops.shp") %>% 
   st_make_valid()
 
-all.sf <- all.off %>% 
+all.sf <- all.out %>% 
   st_as_sf(coords=c("lon", "lat"), crs=4326) %>% 
   st_intersection(pops) 
 
@@ -224,8 +256,7 @@ all.pop <- all.sf %>%
   data.frame() %>% 
   dplyr::select(-Sig, -geometry)
 
-
 table(all.pop$pop)
 
 #8. Save----
-write.csv(all.pop, "Data/MonitoringData_Offsets.csv", row.names = FALSE)
+write.csv(all.out, "Data/MonitoringData_Offsets.csv", row.names = FALSE)
