@@ -95,7 +95,8 @@ CONI.tidy <-  CONI.use %>%
   group_by(Sample_ID, Latitude, Longitude, date, Max_Distance, Time_Method, Max_Duration, Abundance, BIRDID) %>% 
   dplyr::filter(row_number()==1) %>% 
   ungroup() %>% 
-  dplyr::select(Sample_ID, Latitude, Longitude, date, Max_Distance, Time_Method, Start_Duration, End_Duration, Max_Duration, Time_Level, Abundance)
+  dplyr::select(Sample_ID, Latitude, Longitude, date, Max_Distance, Time_Method, Start_Duration, End_Duration, Max_Duration, Time_Level, Abundance) %>% 
+  mutate(source = "National CONI database")
 
 #6. Calculate time since sunset & sunrise----
 #Filter out surveys with no survey time, get local timezone
@@ -156,7 +157,8 @@ BAM.use <- counts %>%
                                          "1 min intervals to 10 mins"),
                 !is.na(Time_Description)) %>% 
   mutate(date = ymd_hms(UTC, tz="UTC")) %>% 
-  dplyr::select(Sample_ID, Latitude, Longitude, date, Max_Distance, Time_Method, Start_Duration, End_Duration, Max_Duration, Time_Level, Abundance)
+  dplyr::select(Sample_ID, Latitude, Longitude, date, Max_Distance, Time_Method, Start_Duration, End_Duration, Max_Duration, Time_Level, Abundance) %>% 
+  mutate(source = "Boreal Avian Modelling project")
 #Took out 1 min intervals to 10 minutes because there is only one obs of this time type
 
 #4. Calculate BAM time since sunset & sunrise----
@@ -231,7 +233,8 @@ nsn.use <- nsn.raw %>%
                 Latitude!="blank") %>% 
   mutate(Latitude = as.numeric(Latitude),
          Longitude = as.numeric(Longitude)) %>% 
-  dplyr::filter(Latitude > 0, Latitude < 49)
+  dplyr::filter(Latitude > 0, Latitude < 49) %>% 
+  mutate(source = "Nightjar Survey Network")
   # mutate(starthour = hour(start.time2), 
   #        endhour = hour(end.time3),
   #        hour = hour(date),
@@ -311,7 +314,8 @@ cns.use <- raw %>%
          End_Duration = Start_Duration + 1,
          Max_Duration = 6,
          Time_Level = End_Duration,
-         Abundance = 1)
+         Abundance = 1) %>% 
+  mutate(source = "Canadian Nightjar Survey")
   
 #3. Calculate time since sunset & sunrise----
 #Filter out surveys with no survey time, get local timezone
@@ -366,6 +370,8 @@ all <- rbind(BAM.sun, CONI.sun) %>%
          Start_Duration = as.numeric(Start_Duration),
          End_Duration = as.numeric(End_Duration)) %>% 
   dplyr::filter(doy < 230)
+
+write.csv(all, "Data/OffsetData.csv", row.names = FALSE)
 
 #2. Adjust tsss & tssr----
 ggplot(all) +
@@ -493,7 +499,7 @@ c <- all.m %>%
 tsss <- c$tsss
 tssr <- c$tssr
 ds <- c$doy/365
-lats <- (c$lat-25)/(64-25)
+lats <- (c$lat)/(64)
 lons <- (c$lon+139)/(139-61)
 
 #G. MODEL####
@@ -509,16 +515,16 @@ sapply(list(md1, md2, md3, md4, md5, md6), AIC)
 #2nd order plus latitude interaction
 
 #2. Find best combination of sunset & sunrise peaks----
-loops <- expand.grid(coss.off = c(-1:2),
-                     cosr.off = c(-1:2))
+loops <- expand.grid(sins.off = c(-1:2),
+                     sinr.off = c(-1:2))
 
 removal.list.sr <- list()
 for(i in 1:nrow(loops)){
   
-  coss.i <- cos((tsss-loops$coss.off[i])/24*2*pi)
-  cosr.i <- cos((tssr-loops$cosr.off[i])/24*2*pi)
+  sins.i <- sin((tsss-loops$sins.off[i])/24*2*pi)
+  sinr.i <- sin((tssr-loops$sinr.off[i])/24*2*pi)
   
-  removal.list.sr[[i]]  <- cmulti(m | d ~ 1 + coss.i + cosr.i, type="rem")
+  removal.list.sr[[i]]  <- cmulti(m | d ~ 1 + sins.i + sins.i:lats + sinr.i + sinr.i:lats, type="rem")
   
   print(paste0("Finished model ", i, " of ", nrow(loops)))
   
@@ -537,7 +543,7 @@ removal.aic <- data.frame(df=sapply(removal.list.sr, function(z) length(coef(z))
 removal.aic
 
 sins = sin((tsss+2)/24*2*pi)
-sinr = sin((tssr+0.5)/24*2*pi)
+sinr = sin((tssr-0.5)/24*2*pi)
 
 plot(tsss, sins)
 plot(tssr, sinr)
@@ -591,8 +597,8 @@ dat <- expand.grid(tsss = seq(-12, 12, 1),
                    ds=seq(0.27, 0.59, 0.01),
                    lat = c(25, 45, 65)) %>% 
   mutate(day = ds*365,
-         duration=6,
-         lats = (lat-25)/(64-25),
+         duration=3,
+         lats = (lat)/(64),
          sins = sin((tsss+2)/24*2*pi),
          sinr = sin((tssr+0.5)/24*2*pi))
 
@@ -603,15 +609,24 @@ dat$pr <- predict(m4, newdata = dat, type="response")
 dat$p <- 1-exp(-dat$duration*dat$pr)
 
 #3. Visualize----
+dat$lat <- factor(dat$lat, levels=c(25, 45, 65), labels=c("25 degrees N", "45 degrees N", "65 degrees N"))
+
 ggplot(dat) +
   geom_raster(aes(x=day, y=tsss, fill=p)) +
   geom_hline(aes(yintercept=0)) +
-  scale_fill_viridis_c() +
-  facet_wrap(~lat)
+  facet_wrap(~lat) +
+  scale_fill_viridis_c(name="Availability\n
+                       for detection\n
+                       in 6-minute\n
+                       survey") +
+  xlab("Day of year") +
+  ylab("Time since sunset")
+
+write.csv(dat, "Data/OffsetPredictionsForFigure.csv", row.names=FALSE)
 
 #I. SAVE####
 
 #1. Save best model----
 saveRDS(m4, "Data/BestOffsetModel.RDS")
 
-#Ok this needs a lot of work. I'm concerned the singing rate approximation doesn't work for CONI. But let's go with something simple for now.
+#Ok this is still far from perfect, but let's go with it for now.
