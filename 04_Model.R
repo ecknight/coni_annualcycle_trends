@@ -130,7 +130,7 @@ mod.df %>%
             perc = impt/n) %>% arrange(-perc)
 
 write.csv(mod.df, "Data/SingleMLModels_P.csv", row.names = FALSE)
-
+mod.df <- read.csv("Data/SingleMLModels_P.csv")
 
 #4. Full models----
 
@@ -231,6 +231,7 @@ coefs <- rbind(coefs.all, coefs.bbs)
 
 colnames(coefs) <- c("est", "SE", "z", "p", "pop", "cov", "method")
 write.csv(coefs, "MLFullModelResults.csv", row.names=FALSE)
+coefs <- read.csv("MLFullModelResults.csv")
 
 #10. Look at ML results----
 coef.sum <- coefs %>% 
@@ -256,8 +257,6 @@ coef.grid <- coef.sum %>%
   pivot_wider(id_cols = c(method, cov), names_from=season, values_from=sig) %>% 
   arrange(method, cov)
 
-
-
 regions <- read_sf("Data/PopulationPolygons.shp")
 
 regions.breed <- regions %>% 
@@ -267,7 +266,16 @@ regions.breed <- regions %>%
               dplyr::filter(cov=="years") %>% 
               mutate(sig = ifelse(p < 0.05, 1, 0)))
 
-write_sf(regions.breed, "Data/PopulationPolygons_Results.shp")
+write_sf(regions.breed, "Data/PopulationPolygons_Results_Breed.shp")
+
+regions.coef <- regions %>% 
+  mutate(pop = as.integer(pop)) %>% 
+  left_join(coefs %>% 
+              dplyr::filter(!cov %in% c("(Intercept)", "years")) %>% 
+              separate(cov, into=c("cov", "stage")) %>% 
+              mutate(sig = ifelse(p < 0.05, 1, 0)))
+
+write_sf(regions.coef, "Data/PopulationPolygons_Results.shp")
 
 regions.breed.sig <- regions.breed %>% 
   dplyr::filter(sig==1)
