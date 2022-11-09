@@ -245,8 +245,8 @@ cov.year <- cov %>%
 
 #10a. Read in data & filter----
 dat <- read.csv("Data/MonitoringData_Offsets.csv") %>% 
-  mutate(datetime = ymd_hms(datetime),
-         year = year(datetime)) %>% 
+  mutate(meandate = ymd_hms(meandate),
+         year = year(meandate)) %>% 
   dplyr::filter(pop %in% unique(cov$pop))
   
 #10b. Join to covariates----
