@@ -64,9 +64,9 @@ coefs <- read.csv("MLFullModelResults_Summary.csv") %>%
                          labels=c("Breeding", "Postbreeding\nmigration", "Nonbreeding", "Prebreeding\nmigration")),
          est = ifelse(cov=="Drought index", -est, est))
 
-plot.coefs <- ggplot(coefs) +
+plot.coefs <- ggplot(coefs %>% dplyr::filter(method=="Integrated", sig < 0.)) +
   geom_raster(aes(x=season, y=cov, fill=sig*100)) +
-  facet_wrap(~method) +
+#  facet_wrap(~method) +
   scale_fill_gradient2(low="red", mid="white", high = "blue", midpoint=0, name="Direction of\neffect &\n% of\npopulations\nwith p < 0.05") +
   my.theme +
   theme(axis.title.x = element_blank(),
@@ -75,7 +75,7 @@ plot.coefs <- ggplot(coefs) +
         axis.text.y=element_text(angle=45, vjust = 0.5, hjust = 1))
 plot.coefs
 
-ggsave(plot.coefs, filename="Figs/EffectResults.jpeg", width=8, height=4)
+ggsave(plot.coefs, filename="Figs/EffectResults.jpeg", width=6, height=4)
 
 #Population trend drivers - spatial----
 regions <- read_sf("Data/PopulationPolygons_Results.shp") %>% 
@@ -98,7 +98,7 @@ plot.region <- ggplot() +
 #  geom_sf(data=dplyr::filter(regions, sig==1), aes(fill=est)) +
   facet_grid(stage~cov, switch="y") +
   scale_fill_gradient2(low="red", mid="white", high = "blue", midpoint=0, name="Effect on\nabundance") +
-  scale_alpha_manual(values = c(0.3, 1.0), labels=c("Not significant", "Significant"), name="") +
+  scale_alpha_manual(values = c(0.5, 1.0), labels=c("Not significant", "Significant"), name="") +
   my.theme +
   theme(legend.position = "bottom",
         axis.line.x = element_blank(),
@@ -110,9 +110,31 @@ plot.region <- ggplot() +
   ylab("") +
   xlim(c(-170, -30)) +
   ylim(c(-60, 80)) 
-plot.region
+#plot.region
 
-ggsave(plot.region, filename="Figs/EffectResults - Spatial.jpeg", width = 12, height = 16)
+ggsave(plot.region, filename="Figs/EffectResults - Spatial - Facet.jpeg", width = 12, height = 16)
+
+plot.region <- ggplot() +
+  geom_polygon(data = world, aes(x=long, y = lat, group = group), alpha = 0.5) + 
+  geom_sf(data=regions, aes(fill=est, alpha = factor(sig))) +
+  #  geom_sf(data=dplyr::filter(regions, sig==1), aes(fill=est)) +
+  facet_grid(~cov, switch="y") +
+  scale_fill_gradient2(low="red", mid="white", high = "blue", midpoint=0, name="Effect on\nabundance") +
+  scale_alpha_manual(values = c(0.5, 1.0), labels=c("Not significant", "Significant"), name="") +
+  my.theme +
+  theme(legend.position = "bottom",
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank())  +
+  xlab("") +
+  ylab("") +
+  xlim(c(-170, -30)) +
+  ylim(c(-60, 80)) 
+#plot.region
+
+ggsave(plot.region, filename="Figs/EffectResults - Spatial - All.jpeg", width = 12, height = 5)
 
 
 #Population trend results----
