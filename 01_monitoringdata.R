@@ -298,11 +298,12 @@ plot.data <- ggplot(all.pop.use) +
   geom_point(aes(x=lon, y=lat, colour=factor(pop)), alpha=0.5) +
   scale_colour_viridis_d(name="Deployment\npopulation") +
   map.theme +
-  theme(legend.position = "bottom") +
+  theme(legend.position = "right") +
   xlab("") +
   ylab("") + 
   xlim(c(-180, -50)) +
+  ylim(c(25, 83.5)) +
   facet_wrap(~method)
 plot.data
 
-ggsave(plot.data, filename="Figs/MonitoringDataPlot.jpeg", width=24, height=8)
+ggsave(plot.data, filename="Figs/MonitoringDataPlot.jpeg", width=10, height=3)
