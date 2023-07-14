@@ -5,6 +5,7 @@ library(suncalc)
 library(detect)
 library(sf)
 library(data.table)
+library(ggmap)
 
 options(scipen = 99999)
 
@@ -185,8 +186,8 @@ all.stop <- rbindlist(all.stop.list) %>%
   ungroup() %>% 
   mutate(duration = (enddate - startdate)/n,
          datetime = startdate + duration*(stop-1),
-         tsss = tsss + duration*(stop-1),
-         tssr = tssr + duration*(stop-1))
+         tsss = as.numeric(tsss + duration*(stop-1)),
+         tssr = as.numeric(tssr + duration*(stop-1)))
 
 #7. Calculate offsets----
 
@@ -252,11 +253,56 @@ all.sf <- all.out %>%
 
 all.pop <- all.sf %>% 
   rename(pop = id) %>% 
-  left_join(all.off) %>% 
+  dplyr::select(method, route, obs, startdate, enddate, pop) %>% 
   data.frame() %>% 
-  dplyr::select(-Sig, -geometry)
+  left_join(all.off)
 
-table(all.pop$pop)
-
-#8. Save----
+#9. Save----
 write.csv(all.out, "Data/MonitoringData_Offsets.csv", row.names = FALSE)
+
+#10. Plot----
+raw <- read.csv("/Users/ellyknight/Documents/UoA/Projects/Projects/MCP2/Analysis/Data/CONIMCP_CleanDataAll.csv")
+
+bird <- raw %>% 
+  dplyr::select(PinpointID, BandLat, BandLong) %>% 
+  unique() %>% 
+  st_as_sf(coords=c("BandLong", "BandLat"), crs=4326) %>% 
+  st_intersection(pops) %>% 
+  rename(pop=id) %>% 
+  data.frame() %>% 
+  dplyr::select(PinpointID, pop) %>% 
+  rbind(data.frame(PinpointID=c(437, 442, 448, 455, 456, 457, 458, 489, 491),
+                   pop = c(1, 2, 2, 6, 6, 6, 6, 6, 6)))
+
+all.pop.use <- all.pop %>% 
+  dplyr::filter(pop %in% bird$pop) %>% 
+  group_by(pop, method, lon, lat) %>% 
+  summarize(years = n()) %>% 
+  ungroup() 
+
+table(all.pop.use$method, all.pop.use$pop)
+
+can <- map_data("world") %>% 
+  dplyr::filter(region %in% c("Canada", "USA"))
+
+map.theme <- theme_nothing() +
+  theme(text=element_text(size=12, family="Arial"),
+        axis.title.x=element_text(margin=margin(10,0,0,0)),
+        axis.title.y=element_text(margin=margin(0,10,0,0)),
+        axis.text = element_blank())
+
+all.pop.use$method <- factor(all.pop.use$method, levels=c("BBS", "CNS", "NSN"), labels=c("Breeding Bird Survey", "Canadian Nightjar Survey", "Nightjar Survey Network"))
+
+plot.data <- ggplot(all.pop.use) +
+  geom_polygon(data = can, aes(x=long, y = lat, group = group), alpha = 0.7) + 
+  geom_point(aes(x=lon, y=lat, colour=factor(pop)), alpha=0.5) +
+  scale_colour_viridis_d(name="Deployment\npopulation") +
+  map.theme +
+  theme(legend.position = "bottom") +
+  xlab("") +
+  ylab("") + 
+  xlim(c(-180, -50)) +
+  facet_wrap(~method)
+plot.data
+
+ggsave(plot.data, filename="Figs/MonitoringDataPlot.jpeg", width=24, height=8)
